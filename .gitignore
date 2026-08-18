@@ -1,5 +1,9 @@
 node_modules/
 .env
-public/models/*.glb
 .DS_Store
 npm-debug.log*
+
+# الموديلات البديلة بس — majed.glb بيترفع عشان الديبلوي يشتغل من غير خطوة زيادة
+public/models/majed-meshy.glb
+public/models/majed-rocketbox.glb
+public/models/.rocketbox/

@@ -194,6 +194,37 @@ GLB فيه نفس الـ ARKit blendshapes والـ visemes — يشتغل مع 
 > **Ready Player Me اتقفلت في ٣١ يناير ٢٠٢٦** بعد ما Netflix اشترتها — الموقع
 > والـ APIs كلها offline. أي كود قديم بيستخدمها مش هيشتغل.
 
+---
+
+## الرفع على Railway
+
+الريبو متظبط للديبلوي على طول — `railway.json` موجود، والسيرفر بيسمع على
+`process.env.PORT`، والأفاتار مرفوع مع الكود.
+
+1. **New Project → Deploy from GitHub** واختار `EyadSofian/3D-ai`
+2. في **Variables** حط دول:
+
+```
+OPENAI_API_KEY=sk-…
+ELEVENLABS_API_KEY=sk_…
+ELEVENLABS_VOICE_ID=…
+```
+
+كل الباقي عنده قيم افتراضية. **متحطش `PORT`** — Railway بيحطها لوحده.
+
+3. **Settings → Networking → Generate Domain**
+
+### حاجات مهمة
+
+- **المايك محتاج HTTPS.** دومين Railway بيديك HTTPS تلقائي، فهيشتغل. (على
+  `http://` عادي المتصفح بيرفض `getUserMedia` من أصله.)
+- **المفاتيح على السيرفر بس** — المتصفح مبيشوفش ولا واحد منها، كل النداءات
+  بتعدّي على `/api/*`.
+- **خلي بالك من الاستهلاك**: كل رد بيستهلك من رصيد ElevenLabs (الحرف بحرف)
+  ومن OpenAI. الريبو public — لو حد لقى الدومين هيقدر يستخدمه على حسابك.
+  لو ده يهمّك، حط أي حماية بسيطة قبل ما تنشر الدومين.
+
+
 ## الملفات
 
 ```
