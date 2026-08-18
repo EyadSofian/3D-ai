@@ -15,6 +15,7 @@ import { AudioEngine } from "./audio.js";
 import { LipSync } from "./lipsync.js";
 import { Mic } from "./mic.js";
 import { buildVisemeTimeline, estimateAlignment, stripTags } from "./visemes-ar.js";
+import { emotionCues, inferEmotion } from "./expressions.js";
 import * as api from "./api.js";
 
 const $ = (s) => document.querySelector(s);
@@ -104,10 +105,18 @@ async function playSentence(ev) {
     buffer = await audio.decode(ev.audio);
     alignment = estimateAlignment(ev.text, buffer.duration);
   }
+  // الوسوم لسه في ev.text هنا — دي مصدر المشاعر. بنحسبها قبل ما نشيلها.
+  const clean = stripTags(ev.text);
+  const cues = emotionCues(ev.text);
+  if (!cues.length) {
+    const guess = inferEmotion(clean);
+    if (guess) cues.push({ emotion: guess, at: 0 });
+  }
   await audio.enqueue({
     audio: ev.audio, buffer,
     timeline: buildVisemeTimeline(alignment),
-    text: stripTags(ev.text),
+    text: clean,
+    cues,
   });
 }
 
@@ -165,8 +174,17 @@ async function respondTo(userText) {
 
 /* ───────────────────── الصوت → الشفايف كل frame ───────────────────── */
 
+/* المشاعر بتتقدّم مع الصوت — الإشارات محفوظة كنسبة من الجملة مش بالثواني،
+   لأن مدة الصوت مبتبقاش معروفة وقت التحليل. */
+let cues = [], cueAt = 0, clipDur = 0;
+
 audio.onClipStart = (clip) => {
   lips.setTimeline(clip.timeline);
+  cues = clip.cues || [];
+  cueAt = 0;
+  clipDur = lips.duration || 0;
+  avatar.setEmotion(cues[0]?.at === 0 ? cues[0].emotion : "neutral");
+  if (cues[0]?.at === 0) cueAt = 1;
   setState("speaking");
   caption(clip.text);
 };
@@ -174,6 +192,8 @@ audio.onClipStart = (clip) => {
 audio.onDrained = () => {
   lips.clear();
   avatar.applyLipSync(null);
+  avatar.setEmotion("neutral");
+  cues = []; cueAt = 0;
   caption("");
   setState(listening ? "listening" : "idle");
 };
@@ -182,7 +202,12 @@ function driveLips() {
   requestAnimationFrame(driveLips);
   if (!avatar.ready) return;
   if (audio.isPlaying) {
-    avatar.applyLipSync(lips.sample(audio.playbackTime, audio.envelope));
+    const t = audio.playbackTime;
+    avatar.applyLipSync(lips.sample(t, audio.envelope));
+    while (cueAt < cues.length && clipDur > 0 && t / clipDur >= cues[cueAt].at) {
+      avatar.setEmotion(cues[cueAt].emotion);
+      cueAt++;
+    }
   } else if (lips.active) {
     avatar.applyLipSync(null);
   }
@@ -318,7 +343,7 @@ async function boot() {
 /* ───────────────────────────── ربط ───────────────────────────── */
 
 // مقبض للتشخيص من الـ console — بيسهّل اختبار الشفايف من غير مفاتيح API
-window.__majed = { avatar, audio, lips, mic, history, setState, buildVisemeTimeline };
+window.__majed = { avatar, audio, lips, mic, history, setState, buildVisemeTimeline, emotionCues };
 
 el.micBtn.addEventListener("click", toggleMic);
 

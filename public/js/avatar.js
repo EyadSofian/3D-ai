@@ -13,8 +13,29 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { EMOTIONS } from "./expressions.js";
 
 const VISEME_PREFIX = "viseme_";
+
+/**
+ * معايرة الحركة. القيم دي هي الفرق بين "فم بينطّ" و"حد بيتكلم".
+ *
+ * أهم اتنين:
+ *  • smooth  — سرعة سحب كل morph لهدفه. من غيرها الشفايف بتقفز كل frame
+ *              وبتبان ميكانيكية. القيمة أعلى = أسرع وأحدّ.
+ *  • jawGain — الفك بيتفتح قد إيه. الكلام العادي بيفتح ثلث الفتحة تقريبًا،
+ *              مش على الآخر. القيمة العالية بتخلي الأفاتار كإنه بيزعّق.
+ */
+const LIP = {
+  smooth: 21,      // تنعيم الشفايف والفك (1/ثانية)
+  faceSmooth: 7,   // التعبيرات بتتحرك أبطأ من الشفايف
+  emoSmooth: 2.6,  // الانتقال بين المشاعر — بطيء عشان يبان طبيعي
+  jawGain: 0.52,
+  closeGain: 0.75,
+  roundGain: 0.55,
+  wideGain: 0.30,
+  visemeGain: 0.72,
+};
 
 /** أسماء ARKit اللي بنشتغل عليها كطبقة تانية فوق الـ visemes. */
 const ARKIT = {
@@ -26,6 +47,12 @@ const ARKIT = {
   browUp: ["browInnerUp"],
   browDown: ["browDownLeft", "browDownRight"],
 };
+
+/** الشفايف بتتحرك أسرع من باقي الوش، والرمشة أسرع من الاتنين. */
+const LIP_MORPHS = new Set([
+  ...ARKIT.jaw, ...ARKIT.close, ...ARKIT.round, ...ARKIT.wide,
+]);
+const BLINK_MORPHS = new Set(ARKIT.blink);
 
 const lerp = (a, b, t) => a + (b - a) * t;
 const damp = (a, b, l, dt) => lerp(a, b, 1 - Math.exp(-l * dt));
@@ -57,7 +84,15 @@ export class Avatar {
       gazeX: 0, gazeY: 0, gazeTX: 0, gazeTY: 0, nextGaze: 2.5,
       jaw: 0, round: 0, wide: 0, close: 0,
       visemes: Object.create(null),
+      emo: Object.create(null),       // أوزان التعبير الحالية (بتتمزج بالتدريج)
+      emoTarget: Object.create(null), // اللي رايحين ليه
+      mouthBias: 0,                   // التعبير بيفتح/يقفل الفم شوية
+      headTilt: 0,
+      micro: 0, nextMicro: 3,         // تعبيرات دقيقة عشوائية
     };
+    /** القيمة المطبّقة حاليًا لكل morph — دي أساس التنعيم. */
+    this._applied = new Map();
+    this.emotion = "neutral";
 
     this._onPointer = (e) => {
       const r = this.mount.getBoundingClientRect();
@@ -81,7 +116,7 @@ export class Avatar {
       if (o.isMesh || o.isSkinnedMesh) {
         o.frustumCulled = false;         // بيمنع اختفاء الراسة عند زوايا معيّنة
         o.castShadow = false;
-        if (o.material) o.material.envMapIntensity = 0.9;
+        if (o.material) o.material.envMapIntensity = 1.15;
       }
     });
     this.scene.add(this.model);
@@ -109,7 +144,7 @@ export class Avatar {
     this.renderer.setSize(w, h);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = 1.16;
     this.mount.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
@@ -119,17 +154,23 @@ export class Avatar {
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     pmrem.dispose();
 
-    const key = new THREE.DirectionalLight(0xffffff, 2.1);
+    // إضاءة تلات نقط. الـ rim هو اللي بيفصل الأفاتار عن الخلفية الغامقة —
+    // من غيره الحواف بتدوب في السواد والصورة بتبان مسطّحة.
+    const key = new THREE.DirectionalLight(0xfff2e4, 2.35);
     key.position.set(1.4, 2.4, 2.2);
     this.scene.add(key);
 
-    const fill = new THREE.DirectionalLight(0xd8e6ff, 0.7);
+    const fill = new THREE.DirectionalLight(0xd4e4ff, 0.85);
     fill.position.set(-2.0, 0.8, 1.2);
     this.scene.add(fill);
 
-    const rim = new THREE.DirectionalLight(0xffd9b0, 1.1);
-    rim.position.set(-0.6, 1.6, -2.4);
+    const rim = new THREE.DirectionalLight(0xffd2a0, 1.75);
+    rim.position.set(-1.1, 1.9, -2.4);
     this.scene.add(rim);
+
+    const rim2 = new THREE.DirectionalLight(0xa9c6ff, 0.95);
+    rim2.position.set(1.6, 1.2, -2.0);
+    this.scene.add(rim2);
 
     this.camera = new THREE.PerspectiveCamera(26, w / h, 0.05, 60);
     this.clock = new THREE.Clock();
@@ -239,6 +280,18 @@ export class Avatar {
     return null;
   }
 
+  /**
+   * التعبير الحالي. الانتقال بيحصل بالتدريج في الحلقة، مش فجأة.
+   * intensity بتسمح بنفس التعبير بشدة مختلفة (مثلاً ابتسامة خفيفة).
+   */
+  setEmotion(name, intensity = 1) {
+    const e = EMOTIONS[name] ? name : "neutral";
+    this.emotion = e;
+    const t = Object.create(null);
+    for (const [k, v] of Object.entries(EMOTIONS[e])) t[k] = v * intensity;
+    this.anim.emoTarget = t;
+  }
+
   /** تشخيص واضح: الموديل فيه إيه فعلًا؟ */
   _diagnose() {
     const all = [...this.morphs.keys()];
@@ -336,7 +389,7 @@ export class Avatar {
       // مفيش عضم — بنلوي الجذع كله بشكل خفيف حوالين قاعدة الرقبة
       this.pivot.rotation.y = a.gazeX * 0.30 + sway * 0.8;
       this.pivot.rotation.x = a.gazeY * 0.18 + a.lean * 0.30 + breath;
-      this.pivot.rotation.z = a.tilt * 0.30;
+      this.pivot.rotation.z = (a.tilt + a.headTilt * 0.35) * 0.30;
     }
     if (this.bones.head) {
       const r = this.rest.head;
@@ -362,20 +415,55 @@ export class Avatar {
       eye.rotation.x = this.rest[k].x + a.gazeY * 0.24;
     }
 
-    /* الشفايف: الـ visemes الأول، وبعدين ARKit فوقيها */
-    for (const name of this.morphs.keys()) {
-      if (name.startsWith(VISEME_PREFIX)) this._setMorph(name, 0);
+    /* ─── التعبير: امزج ناحية الهدف بالتدريج، مش قفزة ─── */
+    const emo = a.emo, tgt = a.emoTarget;
+    for (const k in tgt) if (!(k in emo)) emo[k] = 0;
+    for (const k in emo) emo[k] = damp(emo[k], tgt[k] || 0, LIP.emoSmooth, dt);
+    a.mouthBias = emo.mouthBias || 0;
+    a.headTilt = emo.headTilt || 0;
+
+    /* تعبيرات دقيقة عشوائية — الوش الساكن تمامًا بيبان ميت حتى لو الفم شغال */
+    a.nextMicro -= dt;
+    if (a.nextMicro <= 0) {
+      a.micro = 0.25 + Math.random() * 0.45;
+      a.nextMicro = 2.2 + Math.random() * 4.5;
+    }
+    a.micro = Math.max(0, a.micro - dt * 0.8);
+
+    /* ─── ابنِ هدف كل morph في مكان واحد ───
+       لازم نجمّع مش نكتب فوق بعض: نفس الاسم ممكن ييجي من التعبير ومن
+       الشفايف مع بعض (mouthSmile مثلاً). */
+    const T = Object.create(null);
+    const add = (n, v) => { if (v) T[n] = (T[n] || 0) + v; };
+    const addAll = (names, v) => { for (const n of names) add(n, v); };
+
+    for (const k in emo) {
+      if (k === "mouthBias" || k === "headTilt") continue;
+      add(k, emo[k]);
     }
     for (const [v, w] of Object.entries(a.visemes)) {
-      this._setMorph(VISEME_PREFIX + v, w);
+      add(VISEME_PREFIX + v, w * LIP.visemeGain);
     }
-    this._setMorphGroup(ARKIT.jaw, a.jaw * 0.82);
-    this._setMorphGroup(ARKIT.close, a.close * 0.7);
-    this._setMorphGroup(ARKIT.round, a.round * 0.6);
-    this._setMorphGroup(ARKIT.wide, a.wide * 0.35);
-    this._setMorphGroup(ARKIT.blink, blink);
-    this._setMorphGroup(ARKIT.browUp, Math.max(0, a.brow));
-    this._setMorphGroup(ARKIT.browDown, Math.max(0, -a.brow));
+    addAll(ARKIT.jaw, clamp01(a.jaw + a.mouthBias * 0.30) * LIP.jawGain);
+    addAll(ARKIT.close, a.close * LIP.closeGain);
+    addAll(ARKIT.round, a.round * LIP.roundGain);
+    addAll(ARKIT.wide, a.wide * LIP.wideGain);
+    addAll(ARKIT.blink, blink);
+    addAll(ARKIT.browUp, Math.max(0, a.brow) + a.micro * 0.22);
+    addAll(ARKIT.browDown, Math.max(0, -a.brow));
+
+    /* ─── طبّق — كل قيمة بتتسحب لهدفها بدل ما تقفز عليه ───
+       دي أهم سطور في الملف. من غيرها الشفايف بتتغير فجأة كل frame
+       وبتبان ميكانيكية مهما كان الجدول الزمني مظبوط. */
+    for (const name of this.morphs.keys()) {
+      const want = clamp01(T[name] || 0);
+      const rate = BLINK_MORPHS.has(name) ? 45          // الرمشة لازم تفضل حادة
+        : (name.startsWith(VISEME_PREFIX) || LIP_MORPHS.has(name)) ? LIP.smooth
+        : LIP.faceSmooth;
+      const cur = damp(this._applied.get(name) || 0, want, rate, dt);
+      this._applied.set(name, cur < 1e-4 ? 0 : cur);
+      this._setMorph(name, cur);
+    }
 
     this.renderer.render(this.scene, this.camera);
   };

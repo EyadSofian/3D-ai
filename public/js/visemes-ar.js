@@ -41,10 +41,10 @@ export const SHAPE = {
   SS:  { jaw: 0.12, round: 0.00, wide: 0.55, close: 0.00 },
   nn:  { jaw: 0.16, round: 0.00, wide: 0.20, close: 0.00 },
   RR:  { jaw: 0.24, round: 0.35, wide: 0.10, close: 0.00 },
-  aa:  { jaw: 0.90, round: 0.00, wide: 0.15, close: 0.00 },
-  E:   { jaw: 0.45, round: 0.00, wide: 0.60, close: 0.00 },
+  aa:  { jaw: 0.82, round: 0.00, wide: 0.15, close: 0.00 },
+  E:   { jaw: 0.40, round: 0.00, wide: 0.60, close: 0.00 },
   I:   { jaw: 0.26, round: 0.00, wide: 0.90, close: 0.00 },
-  O:   { jaw: 0.58, round: 0.75, wide: 0.00, close: 0.00 },
+  O:   { jaw: 0.52, round: 0.75, wide: 0.00, close: 0.00 },
   U:   { jaw: 0.28, round: 1.00, wide: 0.00, close: 0.00 },
 };
 

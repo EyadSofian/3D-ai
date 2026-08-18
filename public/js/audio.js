@@ -55,9 +55,10 @@ export class AudioEngine {
   }
 
   /** ضيف جملة للطابور — بتشتغل لوحدها لو مفيش حاجة شغالة. */
-  async enqueue({ audio, timeline, text, buffer }) {
+  async enqueue({ audio, buffer, ...rest }) {
     if (!buffer) buffer = await this.decode(audio);
-    this.queue.push({ buffer, timeline, text });
+    // ...rest عشان أي حاجة زيادة (timeline, text, cues) توصل للـ clip زي ما هي
+    this.queue.push({ buffer, ...rest });
     if (!this.playing) this._next();
   }
 
