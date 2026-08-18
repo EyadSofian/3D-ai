@@ -154,13 +154,23 @@ export function buildVisemeTimeline(alignment) {
   const out = [];
 
   let held = null; // آخر viseme اتحدد — بنمسكه خلال السواكن والشدّات
+  let inTag = 0;   // جوّه وسم أداء؟
 
   for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+
+    // وسوم الأداء ([بهدوء]، [يضحك] …) تعليمات للـ TTS مش كلام بيتنطق، بس
+    // ElevenLabs بيرجّع توقيت لحروفها زي أي حرف تاني. لو مشيناها هنا الفم
+    // هينطق "بهدوء" حرف حرف في أول الجملة.
+    if (ch === "[") { inTag++; continue; }
+    if (ch === "]") { inTag = Math.max(0, inTag - 1); continue; }
+    if (inTag) continue;
+
     const t0 = starts[i];
     const t1 = ends[i];
     if (typeof t0 !== "number" || typeof t1 !== "number" || t1 < t0) continue;
 
-    let v = visemeForChar(chars[i]);
+    let v = visemeForChar(ch);
     if (v === null) v = held;      // حرف مبيغيّرش الشكل -> كمّل باللي قبله
     if (v === null) continue;      // لسه مفيش شكل من الأصل
     held = v;
