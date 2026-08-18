@@ -133,6 +133,24 @@ python3 tools/rocketbox_to_glb.py --fetch Male_Adult_19 public/models/majed.glb
 والباقي في [مجلد Avatars](https://github.com/microsoft/Microsoft-Rocketbox/tree/main/Assets/Avatars)
 (`Male_Adult_01`…`21`، و`Business_Male_*`، `Medical_*`، `Police_*` …).
 
+### تركيب blendshapes على أي أفاتار Ready Player Me
+
+معظم أفاتارات RPM المنشورة على Sketchfab **مصدّرة من غير الـ morph targets** —
+لأنها باراميتر اختياري في الرابط وأغلب الناس مش واخدة بالها منه. فبيبقى عندك
+موديل حلو الفم فيه ميت.
+
+الحل إن كل أفاتارات RPM مبنية على **نفس الـ base mesh بالظبط**:
+`Wolf3D_Head` = 2162 vertex، `Wolf3D_Teeth` = 84، كل عين 120 — بنفس ترتيب
+الـ vertices وبنفس الـ UV. يعني الـ blendshapes بتاعة أي أفاتار RPM بتركب على
+أي أفاتار RPM تاني **حرفيًا**، مش تقريب:
+
+```bash
+python3 tools/transfer_morphs.py <فيه_blendshapes.glb> <موديلك.glb> <الناتج.glb>
+```
+
+الأداة بتتأكد الأول إن الـ indices والـ UV متطابقة وبتقف لو الموديلين مش نفس
+القاعدة. النتيجة: ٧٢ morph target (١٥ viseme + ٥٢ ARKit) على موديل كان فاضي.
+
 ### ليه فيه محوّل مكتوب بالإيد
 
 ملفات RocketBox بصيغة FBX بتاعة Unity، والمتصفح بيقرا GLB بس. المحوّلات
@@ -157,6 +175,14 @@ python3 tools/rocketbox_to_glb.py --fetch Male_Adult_19 public/models/majed.glb
 | رمش | ❌ العينين مرسومة | ✅ `eyeBlinkLeft/Right` |
 | visemes | ٤ تشوّهات مولّدة | ١٥ أصلية بإيد فنان |
 | الحجم | ٩٫١ ميجا | ٥٫٠ ميجا |
+
+الموديلات المتاحة في `public/models/`:
+
+| الملف | الشكل | ملاحظة |
+|---|---|---|
+| `majed.glb` | كرتوني (RPM) | الافتراضي — ثوب وغترة، بس نضارة ومن غير دقن |
+| `majed-rocketbox.glb` | واقعي | عربي بدقن وثوب وغترة · MIT |
+| `majed-meshy.glb` | كرتوني | موديلك الأصلي — الفم مبيتفتحش |
 
 ### لو عايز شبهك انت
 
