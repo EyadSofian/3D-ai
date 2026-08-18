@@ -1,0 +1,169 @@
+<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<title>Self test</title>
+<style>body{background:#0a0d16;color:#dfe6f5;font:13px/1.7 monospace;margin:0;padding:16px}
+#mount{width:300px;height:340px;border:1px solid #333;float:left;margin-inline-end:16px}
+pre{white-space:pre-wrap;margin:0}
+.ok{color:#3ddc97}.bad{color:#ff6b7a}</style>
+<script type="importmap">{"imports":{
+ "three":"https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+ "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"}}</script>
+</head><body>
+<div id="mount"></div><pre id="out"></pre>
+<script type="module">
+import * as THREE from "three";
+import { GLTFExporter } from "three/addons/exporters/GLTFExporter.js";
+import { Avatar } from "./js/avatar.js";
+import { LipSync } from "./js/lipsync.js";
+import { buildVisemeTimeline, VISEMES } from "./js/visemes-ar.js";
+
+const out = document.getElementById("out");
+const R = [];
+let pass = 0, fail = 0;
+const log = (s, cls="") => { R.push(cls?`<span class="${cls}">${s}</span>`:s); out.innerHTML = R.join("\n"); };
+const check = (cond, label, extra="") => {
+  cond ? pass++ : fail++;
+  log(`${cond?"  ✓":"  ✗"} ${label}${extra?"  "+extra:""}`, cond?"ok":"bad");
+};
+
+/* ── 1. ابني موديل شبه RPM: morph targets بنفس الأسماء + عضم ── */
+function morphedGeometry(names) {
+  const g = new THREE.SphereGeometry(0.1, 8, 6);
+  const base = g.attributes.position.array;
+  g.morphAttributes.position = names.map((_, k) => {
+    const a = new Float32Array(base.length);
+    for (let i = 0; i < a.length; i++) a[i] = ((k + 1) % 3) * 0.004;
+    return new THREE.BufferAttribute(a, 3);
+  });
+  return g;
+}
+function makeMesh(name, names, bones) {
+  const g = morphedGeometry(names);
+  const n = g.attributes.position.count;
+  g.setAttribute("skinIndex", new THREE.BufferAttribute(new Uint16Array(n*4), 4));
+  const w = new Float32Array(n*4); for (let i=0;i<n;i++) w[i*4]=1;
+  g.setAttribute("skinWeight", new THREE.BufferAttribute(w, 4));
+  const m = new THREE.SkinnedMesh(g, new THREE.MeshStandardMaterial());
+  m.name = name;
+  m.morphTargetInfluences = new Array(names.length).fill(0);
+  m.morphTargetDictionary = Object.fromEntries(names.map((s,i)=>[s,i]));
+  m.bind(new THREE.Skeleton(bones));
+  return m;
+}
+
+const VIS = VISEMES.map(v => "viseme_" + v);
+const ARK = ["jawOpen","mouthClose","mouthFunnel","mouthPucker",
+             "mouthSmileLeft","mouthSmileRight","eyeBlinkLeft","eyeBlinkRight",
+             "browInnerUp","browDownLeft","browDownRight"];
+
+const root = new THREE.Group();
+const hips = new THREE.Bone(); hips.name = "Hips";
+const spine = new THREE.Bone(); spine.name = "Spine2"; spine.position.y = .8;
+const neck = new THREE.Bone(); neck.name = "Neck"; neck.position.y = .5;
+const head = new THREE.Bone(); head.name = "Head"; head.position.y = .15;
+const eyeL = new THREE.Bone(); eyeL.name = "LeftEye"; eyeL.position.set(-.03,.08,.06);
+const eyeR = new THREE.Bone(); eyeR.name = "RightEye"; eyeR.position.set(.03,.08,.06);
+head.add(eyeL, eyeR); neck.add(head); spine.add(neck); hips.add(spine);
+const bones = [hips, spine, neck, head, eyeL, eyeR];
+root.add(hips);
+
+// الحالة الواقعية: الـ visemes على الوش، وjawOpen على الوش *و* السنان
+root.add(makeMesh("Wolf3D_Head",  [...VIS, ...ARK], bones));
+root.add(makeMesh("Wolf3D_Teeth", ["jawOpen","mouthClose"], bones));
+root.add(makeMesh("Wolf3D_Beard", ["jawOpen","viseme_aa"], bones));
+
+log("=== 1. تصدير موديل اختبار على شكل RPM ===");
+const glb = await new Promise((res, rej) =>
+  new GLTFExporter().parse(root, res, rej, { binary: true }));
+const url = URL.createObjectURL(new Blob([glb], { type: "model/gltf-binary" }));
+check(glb.byteLength > 1000, "اتصدّر GLB", `${(glb.byteLength/1024|0)} KB`);
+
+/* ── 2. حمّله بالكود الحقيقي ── */
+log("\n=== 2. Avatar.load() — الكود الحقيقي ===");
+const avatar = new Avatar(document.getElementById("mount"));
+const rep = await avatar.load(url);
+check(rep.canLipSync, "الموديل ينفع للـ lip sync");
+check(rep.visemes.length === 15, "لقى 15 viseme", `${rep.visemes.length}`);
+check(rep.bones.includes("head"), "لقى عضمة الراسة");
+check(rep.bones.includes("neck") && rep.bones.includes("spine"), "لقى الرقبة والجذع");
+check(rep.bones.includes("eyeL") && rep.bones.includes("eyeR"), "لقى عضم العينين");
+check(rep.meshesWithMorphs.length === 3, "3 meshes فيها morphs", rep.meshesWithMorphs.join("/"));
+
+/* ── 3. النقطة الحرجة: jawOpen لازم يتحرك على الوش والسنان والدقن مع بعض ── */
+log("\n=== 3. الفم بيتحرك على كل الـ meshes مع بعض ===");
+const jawMeshes = avatar.morphs.get("jawOpen");
+check(jawMeshes.length === 3, "jawOpen موجود على 3 meshes", `${jawMeshes.length}`);
+avatar._setMorph("jawOpen", 0.77);
+const vals = jawMeshes.map(m => m.mesh.morphTargetInfluences[m.index]);
+check(vals.every(v => Math.abs(v-0.77) < 1e-6),
+      "الوش + السنان + الدقن كلهم اتحركوا", JSON.stringify(vals));
+log("      (لو دي فشلت: الفم بيفتح والسنان سايبة مكانها)");
+
+/* ── 4. جملة عربية حقيقية -> شفايف متحركة ── */
+log("\n=== 4. جملة عربية كاملة عبر الـ pipeline ===");
+const SENT = "شكراً يا فندم، فيه سؤال تاني؟ وربنا يوفقك.";
+const chars = [...SENT];
+const DUR = 0.075;
+const alignment = {
+  characters: chars,
+  character_start_times_seconds: chars.map((_,i)=>i*DUR),
+  character_end_times_seconds: chars.map((_,i)=>i*DUR+DUR),
+};
+const tl = buildVisemeTimeline(alignment);
+check(tl.length > 6, `الجدول فيه ${tl.length} مقطع`);
+
+const lips = new LipSync();
+lips.setTimeline(tl);
+
+// شغّل الحلقة على كل الجملة وسجّل شكل الفم
+const seen = new Set(), jawTrace = [];
+const total = tl[tl.length-1].t1;
+for (let t = 0; t <= total; t += 1/60) {
+  const env = 0.45 + 0.45*Math.abs(Math.sin(t*22)); // محاكاة مغلّف الصوت
+  const f = lips.sample(t, env);
+  avatar.applyLipSync(f);
+  for (const k of Object.keys(f.weights)) if (f.weights[k] > 0.25) seen.add(k);
+  jawTrace.push(f.jaw);
+}
+// المتوقّع = الأشكال اللي الجملة نفسها فيها فعلًا، مش رقم من دماغنا
+const expected = new Set(tl.map(s => s.viseme));
+const missing = [...expected].filter(v => !seen.has(v));
+check(missing.length === 0,
+      `الفم نطق كل الـ ${expected.size} شكل اللي في الجملة`,
+      missing.length ? "ناقص: " + missing.join(" ") : [...seen].join(" "));
+check(expected.size >= 9, `الجملة فيها ${expected.size} شكل مختلف`);
+const mx = Math.max(...jawTrace), mn = Math.min(...jawTrace);
+check(mx > 0.4, "الفك بيفتح فعلًا", `أقصى ${mx.toFixed(2)}`);
+check(mn < 0.1, "والفم بيتقفل بين الحروف", `أقل ${mn.toFixed(2)}`);
+
+// الحروف الشفوية لازم تقفل الشفايف
+const bIdx = chars.indexOf("ب");
+const atB = lips.sample(bIdx*DUR + DUR/2, 0.8);
+check((atB.weights.PP||0) > 0.5, "حرف «ب» بيقفل الشفايف (PP)", `PP=${(atB.weights.PP||0).toFixed(2)}`);
+check(atB.close > 0.3, "و mouthClose اشتغل", `close=${atB.close.toFixed(2)}`);
+
+// الألف لازم يفتح
+const aIdx = chars.indexOf("ا");
+const atA = lips.sample(aIdx*DUR + DUR/2, 0.9);
+check(atA.jaw > 0.5, "حرف «ا» بيفتح الفك", `jaw=${atA.jaw.toFixed(2)}`);
+
+/* ── 5. المزامنة: الشكل يتغيّر مع الوقت، مش عشوائي ── */
+log("\n=== 5. المزامنة مربوطة بوقت الصوت ===");
+const s1 = lips.sample(0.0, 1), s2 = lips.sample(total*0.5, 1);
+check(JSON.stringify(s1.weights) !== JSON.stringify(s2.weights),
+      "شكل الفم في أول الجملة ≠ نُصّها");
+const zero = lips.sample(total + 1, 0);
+check(Object.keys(zero.weights).length === 0, "بعد ما الصوت يخلص الفم بيرجع سكوت");
+
+/* ── 6. الرسم فعلًا شغّال ── */
+log("\n=== 6. الرندر ===");
+await new Promise(r => setTimeout(r, 250));
+const px = new Uint8Array(4);
+const gl = avatar.renderer.getContext();
+gl.readPixels(150, 170, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+check(avatar.renderer.info.render.frame > 5,
+      "حلقة الرسم شغّالة", `${avatar.renderer.info.render.frame} frame`);
+
+log(`\n${fail===0?"✅ كل الاختبارات نجحت":"❌ فيه فشل"}   ${pass} نجحت · ${fail} فشلت`,
+    fail===0?"ok":"bad");
+window.__DONE = { pass, fail };
+</script></body></html>

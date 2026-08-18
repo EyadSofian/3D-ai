@@ -1,0 +1,44 @@
+<!doctype html><html dir="rtl"><head><meta charset="utf-8"><title>rig test</title>
+<style>body{background:#eef1f6;margin:0;font:12px/1.5 system-ui}
+#row{display:flex;flex-wrap:wrap}figure{margin:0;position:relative}
+figcaption{position:absolute;top:4px;right:6px;background:#111;color:#fff;padding:2px 7px;font-weight:700;border-radius:4px}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"}}</script>
+</head><body><div id="row"></div>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+
+const SHOTS = [
+  ["مقفول (sil)", {}],
+  ["aa — حرف ا",  {viseme_aa:1}],
+  ["O — حرف و",   {viseme_O:1}],
+];
+const W=470,H=540;
+const gltf = await new GLTFLoader().loadAsync("./models/majed.glb");
+const MY=0.114;
+
+for (const [label, set] of SHOTS){
+  const r=new THREE.WebGLRenderer({antialias:true}); r.setPixelRatio(2); r.setSize(W,H);
+  r.setClearColor(0xeef1f6); r.outputColorSpace=THREE.SRGBColorSpace;
+  r.toneMapping=THREE.ACESFilmicToneMapping;
+  const fig=document.createElement("figure"); fig.appendChild(r.domElement);
+  const cap=document.createElement("figcaption"); cap.textContent=label; fig.appendChild(cap);
+  document.getElementById("row").appendChild(fig);
+
+  const sc=new THREE.Scene();
+  const pm=new THREE.PMREMGenerator(r); sc.environment=pm.fromScene(new RoomEnvironment(),0.04).texture; pm.dispose();
+  const m=gltf.scene.clone(true);
+  m.traverse(o=>{ if(!o.isMesh||!o.morphTargetDictionary)return;
+    o.morphTargetInfluences.fill(0);
+    for(const[k,v] of Object.entries(set)){ const i=o.morphTargetDictionary[k]; if(i!==undefined)o.morphTargetInfluences[i]=v; }
+  });
+  sc.add(m);
+  const d=new THREE.DirectionalLight(0xffffff,2.0); d.position.set(1,2,2.5); sc.add(d);
+  const d2=new THREE.DirectionalLight(0xffffff,.8); d2.position.set(-1.5,.5,1.5); sc.add(d2);
+  const c=new THREE.PerspectiveCamera(24,W/H,.01,50);
+  c.position.set(0,MY+0.03,1.65); c.lookAt(0,MY-0.01,0);
+  r.render(sc,c);
+}
+window.__READY=true;
+</script></body></html>

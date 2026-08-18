@@ -1,0 +1,22 @@
+{
+  "name": "majed-3d",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Majed — real-time Arabic 3D talking avatar (mic -> STT -> LLM -> TTS -> viseme lip sync)",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.117.1",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "multer": "^2.0.2",
+    "openai": "^7.5.0"
+  }
+}
