@@ -13,6 +13,12 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
+import { SMAAPass } from "three/addons/postprocessing/SMAAPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { EMOTIONS } from "./expressions.js";
 
 const VISEME_PREFIX = "viseme_";
@@ -54,6 +60,55 @@ const LIP_MORPHS = new Set([
 ]);
 const BLINK_MORPHS = new Set(ARKIT.blink);
 
+/**
+ * لمسة الإنهاء. الحاجات دي هي اللي بتفرّق بين "رندر ويب" و"صورة متصوّرة":
+ *  • vignette  — بيسحب عين المتفرج لوش الأفاتار
+ *  • حبيبات    — بتكسر التدرّجات الرقمية النضيفة أوي
+ *  • دفا خفيف  — الجلد بيبان ميت من غير مِيل للدفا
+ */
+const GRADE = {
+  bloom: 0.0,        // متخليهاش فوق 0.15 مع لبس فاتح
+  vignette: 0.30,
+  grain: 0.012,
+  warmth: 0.015,
+  saturation: 1.05,
+};
+
+const GradeShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    vignette: { value: GRADE.vignette },
+    grain: { value: GRADE.grain },
+    warmth: { value: GRADE.warmth },
+    saturation: { value: GRADE.saturation },
+    time: { value: 0 },
+  },
+  vertexShader: `varying vec2 vUv;
+    void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float vignette, grain, warmth, saturation, time;
+    varying vec2 vUv;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    void main(){
+      vec4 t = texture2D(tDiffuse, vUv);
+      vec3 c = t.rgb;
+
+      c.r += warmth; c.b -= warmth * 0.7;              // دفا
+      float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+      c = mix(vec3(l), c, saturation);                  // تشبّع
+
+      vec2 d = vUv - 0.5;
+      c *= 1.0 - vignette * dot(d, d) * 0.85;           // vignette
+
+      // الحبيبات على الأفاتار بس. لو اتحطت على البكسلات الفاضية بتبان
+      // كضوضاء فوق خلفية الصفحة.
+      c += (hash(vUv * 1024.0 + time) - 0.5) * grain * t.a;
+
+      gl_FragColor = vec4(c, t.a);   // ← الشفافية لازم تعدّي زي ما هي
+    }`,
+};
+
 const lerp = (a, b, t) => a + (b - a) * t;
 const damp = (a, b, l, dt) => lerp(a, b, 1 - Math.exp(-l * dt));
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -90,6 +145,7 @@ export class Avatar {
       headTilt: 0,
       micro: 0, nextMicro: 3,         // تعبيرات دقيقة عشوائية
     };
+    this.skinMaterials = [];
     /** القيمة المطبّقة حاليًا لكل morph — دي أساس التنعيم. */
     this._applied = new Map();
     this.emotion = "neutral";
@@ -113,10 +169,26 @@ export class Avatar {
 
     this.model = gltf.scene;
     this.model.traverse((o) => {
-      if (o.isMesh || o.isSkinnedMesh) {
-        o.frustumCulled = false;         // بيمنع اختفاء الراسة عند زوايا معيّنة
-        o.castShadow = false;
-        if (o.material) o.material.envMapIntensity = 1.15;
+      if (!(o.isMesh || o.isSkinnedMesh)) return;
+      o.frustumCulled = false;           // بيمنع اختفاء الراسة عند زوايا معيّنة
+      o.castShadow = false;
+      const m = o.material;
+      if (!m) return;
+      m.envMapIntensity = 1.15;
+
+      // الجلد: three.js مفيهاش SSS حقيقي، بس الـ sheen بيدّي نفس الإحساس —
+      // هالة دافية على الحواف زي ما الضوء بيعدّي جوه الجلد ويخرج. من غيرها
+      // الوش بيبان بلاستيك مهما كانت الإضاءة مظبوطة.
+      if (/skin|head|body/i.test(m.name || "") && m.isMeshStandardMaterial) {
+        const sk = new THREE.MeshPhysicalMaterial();
+        THREE.MeshStandardMaterial.prototype.copy.call(sk, m);
+        sk.sheen = 0.55;
+        sk.sheenColor = new THREE.Color(0xff9d7a);
+        sk.sheenRoughness = 0.72;
+        sk.roughness = Math.min(0.82, (m.roughness ?? 0.7) + 0.06);
+        sk.envMapIntensity = 1.25;
+        o.material = sk;
+        this.skinMaterials.push(sk);
       }
     });
     this.scene.add(this.model);
@@ -172,8 +244,48 @@ export class Avatar {
     rim2.position.set(1.6, 1.2, -2.0);
     this.scene.add(rim2);
 
+    // ارتداد من تحت — الضوء اللي بينط من الصدر على الدقن والفك.
+    // حيلة قديمة في تصوير البورتريه وبتفرق جدًا في الوش الثلاثي الأبعاد.
+    const bounce = new THREE.DirectionalLight(0xffd9c4, 0.55);
+    bounce.position.set(0, -1.4, 1.8);
+    this.scene.add(bounce);
+
     this.camera = new THREE.PerspectiveCamera(26, w / h, 0.05, 60);
     this.clock = new THREE.Clock();
+    this._buildComposer(w, h);
+  }
+
+  /**
+   * سلسلة الإنهاء. الرندر الخام في three.js بيطلع نضيف أوي وحاد أوي —
+   * والعين بتقراه كـ "جرافيك" مش كـ صورة. التلات خطوات دول بيقفلوا
+   * الفرق ده من غير ما يكلفوا كتير على الأداء.
+   */
+  _buildComposer(w, h) {
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.setPixelRatio(dpr);
+    this.composer.setSize(w, h);
+
+    // الخلفية بتاعة الصفحة بتبان من ورا الأفاتار، فالسلسلة كلها لازم
+    // تحافظ على القناة الرابعة — أي pass بيكتب alpha=1 بيمسحها.
+    const rp = new RenderPass(this.scene, this.camera);
+    rp.clearAlpha = 0;
+    this.composer.addPass(rp);
+
+    // مفيش bloom افتراضيًا. جرّبناه وطلع ضار هنا: الغترة بيضا، وأي عتبة
+    // بتلمسها بتحوّلها للمبة. سيبناه متاح لو الموديل اتغيّر للبس غامق.
+    if (GRADE.bloom > 0) {
+      this.composer.addPass(
+        new UnrealBloomPass(new THREE.Vector2(w, h), GRADE.bloom, 0.4, 0.995));
+    }
+
+    this.grade = new ShaderPass(GradeShader);
+    this.composer.addPass(this.grade);
+
+    // الحواف المتدرّجة أهم حاجة في وش قريب من الكاميرا
+    if (dpr < 2) this.composer.addPass(new SMAAPass(w * dpr, h * dpr));
+
+    this.composer.addPass(new OutputPass());
   }
 
   /** يبني فهرس: اسم الـ morph -> كل الـ meshes اللي عندها الاسم دا. */
@@ -465,7 +577,8 @@ export class Avatar {
       this._setMorph(name, cur);
     }
 
-    this.renderer.render(this.scene, this.camera);
+    if (this.grade) this.grade.uniforms.time.value = t;
+    (this.composer || this.renderer).render(this.scene, this.camera);
   };
 
   resize() {
@@ -476,6 +589,7 @@ export class Avatar {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
     this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+    this.composer?.setSize(w, h);
   }
 
   dispose() {
