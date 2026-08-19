@@ -154,22 +154,33 @@ def build(fbx_path, tex_dir, tex_size, keep_normals=True):
 
 # ── التكستشرات ───────────────────────────────────────────────────────────
 def load_textures(tex_dir, mats, size):
-    """TGA ➜ JPEG. الأصل 2048² غير مضغوطة (١٢ ميجا للواحدة)."""
+    """
+    TGA ➜ JPEG. الأصل 2048² غير مضغوطة (١٢ ميجا للواحدة).
+
+    الـ normal map مهمة قد اللون بالظبط: من غيرها السطح بيتحسب أملس تمامًا،
+    فالوش بيطلع مسطّح مهما كانت الإضاءة مظبوطة. دي كانت ناقصة في أول نسخة.
+    """
     from PIL import Image
+    import io
     out = {}
     for m in mats:
         part = m.split("_")[-1]                    # m250_head ➜ head
-        for cand in (f"{m}_color.tga", f"m250_{part}_color.tga"):
-            p = Path(tex_dir) / cand
-            if p.exists():
+        slots = {}
+        for slot, suffix in (("base", "color"), ("normal", "normal")):
+            for cand in (f"{m}_{suffix}.tga", f"m250_{part}_{suffix}.tga"):
+                p = Path(tex_dir) / cand
+                if not p.exists():
+                    continue
                 im = Image.open(p).convert("RGB")
                 if max(im.size) > size:
                     im = im.resize((size, size), Image.LANCZOS)
-                import io
                 b = io.BytesIO()
-                im.save(b, "JPEG", quality=90, optimize=True)
-                out[m] = b.getvalue()
+                # الـ normal حساسة للضغط — أي artifact بيبان كخدوش على السطح
+                im.save(b, "JPEG", quality=96 if slot == "normal" else 90, optimize=True)
+                slots[slot] = b.getvalue()
                 break
+        if slots:
+            out[m] = slots
     return out
 
 
@@ -223,16 +234,26 @@ def write_glb(data, out_path, tex_dir=None, tex_size=2048):
     texdata = load_textures(tex_dir, mats, tex_size) if tex_dir else {}
     images, samplers, textures, gmats = [], [{"magFilter": 9729, "minFilter": 9987,
                                               "wrapS": 10497, "wrapT": 10497}], [], []
+
+    def tex(raw):
+        iv = add(raw)
+        images.append({"bufferView": iv, "mimeType": "image/jpeg"})
+        textures.append({"sampler": 0, "source": len(images) - 1})
+        return len(textures) - 1
+
     mat_index = {}
     for i, m in enumerate(mats):
-        pbr = {"metallicFactor": 0.0, "roughnessFactor": 0.72,
+        # الجلد أخشن من القماش شوية، والشعر/الغترة أخشن من الاتنين
+        rough = 0.62 if "head" in m else (0.78 if "keffiyeh" in m else 0.70)
+        pbr = {"metallicFactor": 0.0, "roughnessFactor": rough,
                "baseColorFactor": [1, 1, 1, 1]}
-        if m in texdata:
-            iv = add(texdata[m])
-            images.append({"bufferView": iv, "mimeType": "image/jpeg"})
-            textures.append({"sampler": 0, "source": len(images) - 1})
-            pbr["baseColorTexture"] = {"index": len(textures) - 1}
-        gmats.append({"name": m, "pbrMetallicRoughness": pbr, "doubleSided": False})
+        gm = {"name": m, "pbrMetallicRoughness": pbr, "doubleSided": False}
+        slots = texdata.get(m, {})
+        if "base" in slots:
+            pbr["baseColorTexture"] = {"index": tex(slots["base"])}
+        if "normal" in slots:
+            gm["normalTexture"] = {"index": tex(slots["normal"]), "scale": 1.0}
+        gmats.append(gm)
         mat_index[i] = len(gmats) - 1
 
     prims = []
@@ -301,6 +322,7 @@ def fetch(name, dest):
             f = rel.props[0].replace("\\", "/").split("/")[-1]
             if "_color" in f:
                 want.add(f)
+                want.add(f.replace("_color", "_normal"))
     for f in sorted(want):
         out = dest / f
         if out.exists():
